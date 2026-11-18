@@ -206,6 +206,13 @@ actionlint .github/workflows/apt-pages.yml
 shellcheck scripts/build-apt-repo.sh
 ```
 
+An opt-in synthetic Linux signing/APT integration harness is available at
+`tests/integration_apt.py`. Run it **only in a disposable container**, using the
+exact-image, read-only-source, network-disabled command and recorded evidence in
+[tests/SYNTHETIC_APT_VALIDATION.md](tests/SYNTHETIC_APT_VALIDATION.md). It uses only
+fresh disposable keys and minimal actual `.deb` files; it does not satisfy the
+real-package acceptance gate or authorize setting `APT_REAL_PACKAGE_ACCEPTED`.
+
 These tests cover hostile ZIP/TAR paths and links, duplicates, checksum/inventory
 mismatches, expansion limits, immutable package identities, exact subkey selection,
 primary-secret rejection, stale state, missing assets/receipts, broken chains and
