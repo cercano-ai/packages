@@ -131,6 +131,38 @@ platform infrastructure, not bit-for-bit pinned by this repository. Never claim 
 fully hermetic build. Review/update immutable pins deliberately, including security
 fixes; a frozen snapshot is not automatically secure forever.
 
+### Toolchain base/snapshot compatibility
+
+Treat the base digest and both snapshot timestamps as one reviewed dependency pin.
+The current base's `/etc/apt/sources.list.d/debian.sources` embeds
+`20261104T212339Z` for Debian and Debian Security. Those immutable snapshots provide
+`apt-utils 2.6.2` matching the base's `apt 2.6.2`, and
+`perl 5.36.0-7+deb12u4` matching its `perl-base 5.36.0-7+deb12u4`.
+The previous January 2025 snapshots supplied `apt-utils 2.6.1` and
+`perl 5.36.0-7+deb12u1`, whose exact-version dependencies could not satisfy this
+base. Keep the digest fixed when correcting this mismatch; do not force downgrades,
+disable signature/dependency checks, or substitute a mutable base tag.
+`check-valid-until=no` permits historical snapshot metadata, not unsigned metadata.
+
+For each pin update, inspect the **amd64** base's sources and installed versions,
+then run `apt-get update`, `apt-cache policy apt apt-utils perl perl-base`, and
+`apt-get --simulate install -y --no-install-recommends python3 gnupg apt-utils ca-certificates git tar gzip`
+against only the proposed snapshot URLs in a disposable base container. Require
+signed metadata and successful resolution without downgrades/removals. Confirm
+with a full `linux/amd64` image build and the portable tests inside that image;
+retain the platform, image ID, package inventory and logs. A timestamp comment in
+the base is a starting point, not proof that packages remain available.
+`tests/test_toolchain.py` locks this verified pair against accidental one-sided
+changes; it is an offline regression, **not** a substitute for the build gate.
+
+For the isolated local Colima runtime, explicitly select its context on every
+Docker operation (never change the default context):
+
+```sh
+docker --context colima-cercano-apt build --platform linux/amd64 --iidfile /tmp/apt-toolchain.iid -t cercano-apt-toolchain:local-amd64 toolchain
+docker --context colima-cercano-apt run --rm --platform linux/amd64 --network none -v "$PWD:/src:ro" -w /src "$(cat /tmp/apt-toolchain.iid)" sh -ec 'python3 -B -m unittest discover -s tests -v; PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m py_compile scripts/apt.py tests/test_apt.py tests/test_toolchain.py'
+```
+
 ### Cross-repository read credential — not the packages GITHUB_TOKEN
 
 A repository's `GITHUB_TOKEN` is scoped to that repository; adding `actions: read`
