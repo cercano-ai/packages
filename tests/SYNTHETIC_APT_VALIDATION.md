@@ -14,12 +14,12 @@ docker --context colima-cercano-apt image inspect "$IMAGE" \
   --format '{{.Id}} {{.Os}}/{{.Architecture}}'
 docker --context colima-cercano-apt run --rm --platform linux/amd64 \
   --network none --mount "type=bind,source=$PWD,target=/src,readonly" -w /src \
-  "$IMAGE" sh -ec 'python3 -B tests/integration_apt.py; python3 -B -m unittest discover -s tests -v; PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m py_compile scripts/apt.py tests/test_apt.py tests/test_toolchain.py tests/integration_apt.py; bash -n scripts/build-apt-repo.sh'
+  "$IMAGE" sh -ec 'python3 -B tests/integration_apt.py; python3 -B -m unittest discover -s tests -v; PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m py_compile scripts/apt.py tests/test_apt.py tests/test_toolchain.py tests/test_integration_apt.py tests/integration_apt.py; bash -n scripts/build-apt-repo.sh'
 ```
 
 The image inspect command returned exit 0 and the exact image ID above,
-`linux/amd64`. The final combined command returned **exit 0** in 20.317 seconds:
-all integration assertions passed, all **23 portable fixtures** passed, compilation
+`linux/amd64`. The final combined command returned **exit 0** in 19.774 seconds:
+all integration assertions passed, all **28 portable fixtures** passed, compilation
 and shell syntax checks passed. The fixture duplicate-ZIP warning is intentional.
 The image was already local; no pull/build/runtime dependency installation occurred.
 The container had no network, production credentials, host GPG mounts or writable
@@ -45,10 +45,15 @@ APT, helper output or key records.
 - Successful signing verifies exact `SUBKEY!` helper selection and the real imported
   secret-key records. Independent `gpgv` verifies both InRelease and detached
   Release.gpg against separately exported public material, asserting exactly the
-  generated signing fingerprint and primary fingerprint. Exported repository keyring
+  generated signing fingerprint and primary-fingerprint field in the sole, complete
+  VALIDSIG record (not an unrelated occurrence elsewhere in status). Exported repository keyring
   equals that public material; Release and indices contain amd64/all as expected.
 - Wrong passphrase and forced helper failure (empty input directory) raise real
-  `CalledProcessError` from bash. Wrong primary fingerprint, wrong signing-subkey
+  `CalledProcessError` from bash, with captured stderr containing respectively the
+  exact diagnostic line `gpg: signing failed: Bad passphrase` or
+  `error: no deb packages`. Captured stderr is never included in assertion output.
+  The successful signing and APT install remain positive controls.
+  Wrong primary fingerprint, wrong signing-subkey
   fingerprint, a different imported key and full-primary secret import raise the
   exact intended key-validation messages, not arbitrary incidental exceptions.
 - For all seven sign attempts: private homes mode 0700, key/password files 0600,
@@ -85,6 +90,26 @@ PASS synthetic integration only; NOT APT_REAL_PACKAGE_ACCEPTED
 
 ## Regression-first diagnosis and limits
 
+Review follow-up starting at `a78997aa35c8ae898635543f1d5f0c1cdcf66b9f`:
+before editing, standalone Python reproductions showed the old assertions accepted
+(1) a VALIDSIG with the wrong primary field when the expected primary appeared only
+in an unrelated NEWSIG line, and (2) a bash CalledProcessError caused by an unrelated
+command-not-found error. Both reproductions exited 0, confirming the false positives.
+A disposable network-disabled run of the original harness, instrumented in memory
+only to capture helper stderr, exited 0 in 18.838 seconds and observed the two exact
+diagnostic lines above (GPG also emitted a clear-sign failure line). No passphrase
+value was printed. This probe preceded all file edits.
+
+The strengthened harness parses the sole VALIDSIG record and compares both fields;
+it captures real helper stderr and checks cause-specific lines without printing it.
+Five new portable regression methods cover valid status and diagnostic positive
+controls, unrelated-primary rejection, wrong signing fingerprint, missing/duplicate/
+incomplete VALIDSIG records, and unrelated or absent helper stderr rejection for
+both expected causes. The full pinned-image command above then passed integration,
+28 unit fixtures, compilation and shell syntax checks. No production implementation
+changed. The following paragraph records the earlier harness-development history,
+not the timing or fixture count of this follow-up:
+
 Initial standalone harness execution exited 1 in 11.076 seconds: its subprocess
 observer supplied `timeout` twice when real `check_output()` forwarded `timeout=None`.
 The smallest fix was to set the observer kwargs timeout to 90 before forwarding.
@@ -106,5 +131,5 @@ notes are historical and are not retroactively claims of these tests.
 Worktree retained at
 `/Users/bryancostanich/git_repos/cercano-ai/Cercano/scratch/packages-toolchain-snapshot-fix`,
 branch `fix/apt-toolchain-snapshot`; starting HEAD
-`ee0d53b7c15122007c8b69bbdb48b79193d9bb3b`. Git inspection was local: this bounded
+`a78997aa35c8ae898635543f1d5f0c1cdcf66b9f` for this review follow-up. Git inspection was local: this bounded
 sub-agent was not permitted further delegation. No remote Git operations occurred.

@@ -23,6 +23,23 @@ def run(args, *, expected=0, **kwargs):
     return result.stdout
 
 
+def assert_validsig(status, subkey, primary):
+    records = [line.split() for line in status.splitlines()
+               if line.startswith('[GNUPG:] VALIDSIG ')]
+    assert len(records) == 1, 'expected exactly one VALIDSIG record'
+    record = records[0]
+    assert len(record) == 12, 'expected VALIDSIG with primary-fingerprint field'
+    assert record[2] == subkey, 'wrong VALIDSIG signing fingerprint'
+    assert record[11] == primary, 'wrong VALIDSIG primary fingerprint'
+
+
+def assert_helper_failure(exc, diagnostic):
+    assert isinstance(exc, subprocess.CalledProcessError), 'expected helper failure'
+    assert exc.cmd[0] == 'bash' and exc.returncode != 0, 'expected failing bash helper'
+    # Never include captured stderr (or credentials) in assertion output.
+    assert diagnostic in (exc.stderr or b'').splitlines(), 'missing cause-specific helper diagnostic'
+
+
 def main():
     assert os.geteuid() == 0 and os.uname().machine == 'x86_64'
     with tempfile.TemporaryDirectory(prefix='synthetic-apt-') as tmp:
@@ -69,7 +86,7 @@ def main():
                             APT_SIGNING_PASSPHRASE='disposable-only',
                             SOURCE_ACTIONS_READ_TOKEN='synthetic-credential', GH_TOKEN='synthetic-token')
 
-            def signing(label, changes=None, failure=None, inputs=debs,
+            def signing(label, changes=None, failure=None, inputs=debs, diagnostic=None,
                         message='wrong/unusable primary or primary secret material present'):
                 seen = set()
                 killed = set()
@@ -85,6 +102,7 @@ def main():
                     if args[0] == 'bash':
                         assert args[-1] == subkey + '!'
                         assert not (home / 'key').exists()
+                        kwargs['stderr'] = subprocess.PIPE
                     kwargs['timeout'] = 90
                     result = REAL_RUN(args, **kwargs)
                     if args[0] == 'gpgconf':
@@ -101,7 +119,8 @@ def main():
                         if isinstance(exc, ValueError):
                             assert str(exc) == message, str(exc)
                         else:
-                            assert exc.cmd[0] == 'bash', exc.cmd
+                            assert diagnostic is not None, 'helper failure needs expected cause'
+                            assert_helper_failure(exc, diagnostic)
                     else:
                         assert failure is None, f'{label} unexpectedly accepted'
                 assert seen and seen == killed and all(not p.exists() for p in seen)
@@ -111,7 +130,8 @@ def main():
                 return site
 
             site = signing('good')
-            signing('wrong-passphrase', {'APT_SIGNING_PASSPHRASE': 'incorrect'}, subprocess.CalledProcessError)
+            signing('wrong-passphrase', {'APT_SIGNING_PASSPHRASE': 'incorrect'}, subprocess.CalledProcessError,
+                    diagnostic=b'gpg: signing failed: Bad passphrase')
             signing('wrong-fingerprint', {'APT_PRIMARY_FINGERPRINT': other_primary}, ValueError)
             signing('wrong-subkey-fingerprint', {'APT_SIGNING_SUBKEY_FINGERPRINT': other_subkey},
                     ValueError, message='wrong/unusable signing subkey')
@@ -119,7 +139,8 @@ def main():
             signing('primary-secret', {'APT_SIGNING_SUBKEY_B64': base64.b64encode(full).decode()}, ValueError)
             empty = root / 'empty'
             empty.mkdir()
-            signing('helper-failure', failure=subprocess.CalledProcessError, inputs=empty)
+            signing('helper-failure', failure=subprocess.CalledProcessError, inputs=empty,
+                    diagnostic=b'error: no deb packages')
             verify_home = root / 'verify'
             verify_home.mkdir(mode=0o700)
             trust = root / 'trusted.gpg'
@@ -132,9 +153,7 @@ def main():
                 if name == 'Release.gpg':
                     args.append(site / 'dists/stable/Release')
                 status = run(args).decode()
-                valid = [x.split()[2] for x in status.splitlines() if x.startswith('[GNUPG:] VALIDSIG ')]
-                assert valid == [subkey], status
-                assert primary in status
+                assert_validsig(status, subkey, primary)
             assert 'Architectures: amd64 all' in (site / 'dists/stable/Release').read_text()
             assert 'Package: cercano\n' in (site / 'dists/stable/main/binary-all/Packages').read_text()
             print('PASS independent gpgv: both signatures exact signing subkey and primary; amd64/all indices', flush=True)
