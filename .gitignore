@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# Local acceptance outputs (never commit imported key material).
+site/
+debs/
+candidate/
