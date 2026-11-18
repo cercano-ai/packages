@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -100,6 +101,37 @@ class ArchiveTests(unittest.TestCase):
             apt.immutable_pool(site, debs)
 
 
+class BuildHelperTests(unittest.TestCase):
+    def test_generated_architectures_match_validator(self):
+        # Exercise the real helper with fixture tools; no signing or Debian tools.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tools, debs, home, site = [root / name for name in ('bin', 'debs', 'gnupg', 'site')]
+            for directory in (tools, debs, home):
+                directory.mkdir(mode=0o700)
+            (debs / 'cercano_1.2.3_all.deb').write_bytes(b'fixture')
+            stubs = {
+                'stat': 'echo 700',
+                'gpg': 'exit 0',
+                'dpkg-deb': 'echo cercano',
+                'apt-ftparchive': 'case "$*" in *release*) printf "%s\\n" "$@";; *) printf "Package: cercano\\nArchitecture: all\\nVersion: 1.2.3\\n\\n";; esac',
+            }
+            for name, body in stubs.items():
+                tool = tools / name
+                tool.write_text('#!/bin/bash\n' + body + '\n')
+                tool.chmod(0o700)
+            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'], GNUPGHOME=str(home))
+            subprocess.run(['bash', str(Path(apt.__file__).with_name('build-apt-repo.sh')),
+                            str(site), str(debs), 'B' * 40], env=env, check=True, capture_output=True)
+            self.assertEqual({p.name for p in (site / 'dists/stable/main').iterdir()},
+                             {'binary-amd64', 'binary-all'})
+            release = (site / 'dists/stable/Release').read_text()
+            self.assertIn('Architectures=amd64 all', release)
+            self.assertNotIn('arm64', release)
+            for arch in ('amd64', 'all'):
+                self.assertIn('Architecture: all', (site / f'dists/stable/main/binary-{arch}/Packages').read_text())
+
+
 def key_records(primary='A' * 40, subkey='B' * 40, primary_secret='#', sub_secret='+', cap='s', validity='u'):
     lines = []
     for kind, fpr, secret, caps in [('sec', primary, primary_secret, 'scSC'), ('ssb', subkey, sub_secret, cap)]:
@@ -137,8 +169,8 @@ class FakeAPI:
         candidate = {'tag': tag, 'base': base}
         self.assets[tag, 'candidate.json'] = json.dumps(candidate, sort_keys=True).encode()
         if published:
-            self.assets[tag, 'published.json'] = json.dumps({'state': 'published', 'page_url': 'https://example.test',
-                'candidate_sha256': apt.digest(self.assets[tag, 'candidate.json'])}).encode()
+            self.assets[tag, 'published.json'] = json.dumps({'state': 'published', 'page_url': 'https://cercano-ai.github.io/packages/',
+                'run_id': tag.removeprefix('apt-snapshot-'), 'candidate_sha256': apt.digest(self.assets[tag, 'candidate.json'])}).encode()
 
     def asset(self, api, release, name):
         return self.assets[release['tag_name'], name]
@@ -178,6 +210,48 @@ class StateTests(unittest.TestCase):
         api.assets['apt-snapshot-1', 'published.json'] = b'{"state":"candidate","page_url":"url","candidate_sha256":"bad"}'
         with patch.object(apt, 'asset', api.asset), self.assertRaisesRegex(ValueError, 'receipt'):
             apt.history(api, 'apt-snapshot-1')
+
+    def test_invalid_receipt_schema_url_and_run_binding(self):
+        changes = [
+            {'page_url': 'http://cercano-ai.github.io/packages/'},
+            {'page_url': 'https://evil.test/packages/'},
+            {'page_url': 'https://cercano-ai.github.io/other/'},
+            {'page_url': 'https://cercano-ai.github.io/packages/?query=1'},
+            {'page_url': 'https://cercano-ai.github.io/packages/#fragment'},
+            {'page_url': 'https://cercano-ai.github.io@evil.test/packages/'},
+            {'page_url': True}, {'page_url': ['https://cercano-ai.github.io/packages/']},
+            {'run_id': '2'}, {'run_id': 1}, {'run_id': True}, {'run_id': '01'},
+            {'run_id': 'not-a-run'}, {'extra': 'unexpected'},
+        ]
+        for change in changes + [{'remove': key} for key in ('run_id', 'page_url', 'state', 'candidate_sha256')]:
+            api = FakeAPI()
+            api.add('apt-snapshot-1', 'EMPTY')
+            receipt = json.loads(api.assets['apt-snapshot-1', 'published.json'])
+            if 'remove' in change:
+                del receipt[change['remove']]
+            else:
+                receipt.update(change)
+            api.assets['apt-snapshot-1', 'published.json'] = json.dumps(receipt).encode()
+            with self.subTest(change=change), patch.object(apt, 'asset', api.asset), self.assertRaisesRegex(ValueError, 'receipt'):
+                apt.history(api, 'apt-snapshot-1')
+
+    def test_non_object_receipts(self):
+        for receipt in (None, [], 'published', 1):
+            api = FakeAPI()
+            api.add('apt-snapshot-1', 'EMPTY')
+            api.assets['apt-snapshot-1', 'published.json'] = json.dumps(receipt).encode()
+            with self.subTest(receipt=receipt), patch.object(apt, 'asset', api.asset), self.assertRaisesRegex(ValueError, 'receipt'):
+                apt.history(api, 'apt-snapshot-1')
+
+    def test_linear_history_and_pages_url_forms(self):
+        api = FakeAPI()
+        api.add('apt-snapshot-1', 'EMPTY')
+        api.add('apt-snapshot-2', 'apt-snapshot-1')
+        receipt = json.loads(api.assets['apt-snapshot-2', 'published.json'])
+        receipt['page_url'] = 'https://cercano-ai.github.io/packages'
+        api.assets['apt-snapshot-2', 'published.json'] = json.dumps(receipt).encode()
+        with patch.object(apt, 'asset', api.asset):
+            self.assertEqual(apt.history(api, 'apt-snapshot-2')['id'], 2)
 
     def test_main_and_rerun_guard(self):
         env = {'GITHUB_REPOSITORY': 'cercano-ai/packages', 'GITHUB_REF': 'refs/heads/other', 'GITHUB_RUN_ATTEMPT': '1', 'GH_TOKEN': 'fake'}

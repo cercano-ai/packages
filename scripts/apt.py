@@ -98,6 +98,21 @@ def asset(api, release, name):
     return api.request(f'/releases/assets/{matches[0]["id"]}', binary=True)
 
 
+def validate_receipt(receipt, candidate_sha256, tag):
+    # This is the four-field format emitted by finalize(), not a versioned schema.
+    require(isinstance(receipt, dict)
+            and set(receipt) == {'state', 'candidate_sha256', 'page_url', 'run_id'}
+            and all(isinstance(value, str) for value in receipt.values()),
+            'invalid publication receipt schema')
+    require(receipt['state'] == 'published'
+            and re.fullmatch(r'[0-9a-f]{64}', receipt['candidate_sha256'])
+            and receipt['candidate_sha256'] == candidate_sha256
+            and receipt['page_url'] in ('https://cercano-ai.github.io/packages',
+                                        'https://cercano-ai.github.io/packages/')
+            and re.fullmatch(r'[1-9][0-9]*', receipt['run_id'])
+            and tag == PREFIX + receipt['run_id'], 'invalid publication receipt')
+
+
 def history(api, expected):
     releases = sorted((r for r in api.pages('/releases') if r['tag_name'].startswith(PREFIX)), key=lambda r: r['id'])
     parent = 'EMPTY'
@@ -108,8 +123,7 @@ def history(api, expected):
         receipt = json.loads(asset(api, release, 'published.json'))
         require(candidate['tag'] == release['tag_name'] and candidate['base'] == parent,
                 'broken snapshot chain')
-        require(receipt['candidate_sha256'] == digest(json.dumps(candidate, sort_keys=True).encode())
-                and receipt['state'] == 'published' and receipt['page_url'], 'invalid publication receipt')
+        validate_receipt(receipt, digest(json.dumps(candidate, sort_keys=True).encode()), release['tag_name'])
         parent, last = release['tag_name'], release
     require(parent == expected, 'stale expected base')
     return last
@@ -342,9 +356,9 @@ def finalize():
     release = api.request('/releases/tags/' + tag)
     payload = asset(api, release, 'candidate.json')
     require(digest(payload) == os.environ['CANDIDATE_SHA256'], 'candidate metadata changed')
-    require(os.environ['PAGE_URL'].startswith('https://'), 'no successful Pages URL')
     receipt = {'state': 'published', 'candidate_sha256': digest(payload),
                'page_url': os.environ['PAGE_URL'], 'run_id': os.environ['GITHUB_RUN_ID']}
+    validate_receipt(receipt, digest(payload), tag)
     data = json.dumps(receipt, sort_keys=True).encode()
     api.upload(release['id'], 'published.json', data)
     require(asset(api, release, 'published.json') == data, 'receipt read-back failed')

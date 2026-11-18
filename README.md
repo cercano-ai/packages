@@ -42,6 +42,10 @@ may replace an older **pending** run with a newer pending run; this is not a FIF
    protected `github-pages` environment and the official SHA-pinned deploy action.
 6. Only after the deploy action reports success does a separate release-write job add
    `published.json` binding the candidate digest, successful workflow run and Pages URL.
+   Receipts have exactly four string fields: `state` (`published`), `candidate_sha256`
+   (64 lowercase hex), `run_id` (positive decimal string matching the snapshot tag),
+   and `page_url` (`https://cercano-ai.github.io/packages/`, with optional trailing slash).
+   History and finalization enforce this format; custom domains are not accepted.
    The action does not expose a deployment ID; we deliberately do not invent one.
    A release title/prerelease flag alone never means published. Every snapshot must
    have a valid receipt and a linear parent chain. Any incomplete candidate, stale
@@ -50,9 +54,15 @@ may replace an older **pending** run with a newer pending run; this is not a FIF
 Source inspection was against remote Cercano main
 `cf406792ecb487c9492a6bd259aa36b807b7f743`: packaging workflow, `package-verified.sh`,
 `render_packages.py`, `build-apt-repo.sh`, `sign-apt-repo.sh`, and Linux artifact docs.
-`scripts/build-apt-repo.sh` is vendored unchanged from that revision. The wrapper adds
-stricter primary/subkey checks, exact signature verification and caller-file cleanup.
-No upstream helper is downloaded or executed dynamically.
+`scripts/build-apt-repo.sh` is vendored from that revision with a local two-line
+architecture patch: remove `arm64` from the index-generation loop and the Release
+`Architectures` field, leaving only `amd64` and `all` to match the validator. The
+upstream file SHA256 is
+`330ecf68baeaf7763e3e64f73e53086c42b1da4534f017fa53df06a3454c939e`;
+the patched local file SHA256 is
+`07170703418943c76ae35607b15b6d28c6dcec40fff6d2b98f677ce35c59f607`.
+The wrapper adds stricter primary/subkey checks, exact signature verification and
+caller-file cleanup. No upstream helper is downloaded or executed dynamically.
 
 **Trusted actors:** protected-main maintainers, environment reviewers, GitHub,
 Debian's signed snapshot archive, and administrators controlling Releases, repository
