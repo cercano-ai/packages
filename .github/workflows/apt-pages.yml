@@ -64,6 +64,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Mint short-lived Cercano Actions-read token
+        id: source-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.APT_SOURCE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.APT_SOURCE_APP_PRIVATE_KEY }}
+          owner: cercano-ai
+          repositories: Cercano
+          permission-actions: read
       - name: Validate source, restore pool, sign and construct candidate
         id: prepare
         run: python3 scripts/apt.py prepare
@@ -75,7 +84,7 @@ jobs:
           SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
           ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
           VERSION: ${{ inputs.version }}
-          SOURCE_ACTIONS_READ_TOKEN: ${{ secrets.SOURCE_ACTIONS_READ_TOKEN }}
+          SOURCE_ACTIONS_READ_TOKEN: ${{ steps.source-token.outputs.token }}
           APT_SIGNING_SUBKEY_B64: ${{ secrets.APT_SIGNING_SUBKEY_B64 }}
           APT_SIGNING_PASSPHRASE: ${{ secrets.APT_SIGNING_PASSPHRASE }}
           APT_PRIMARY_FINGERPRINT: ${{ vars.APT_PRIMARY_FINGERPRINT }}
