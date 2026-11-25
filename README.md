@@ -99,7 +99,7 @@ No custom domain is assumed. A project Pages URL normally includes `/packages/`.
 | --- | --- |
 | `APT_SIGNING_SUBKEY_B64` | Single-line standard base64 of a subkey-only GPG export, containing the public primary and **exactly one** secret signing subkey, no primary secret and no unrelated subkeys. Generate/export offline; never put the primary secret in GitHub. |
 | `APT_SIGNING_PASSPHRASE` | Exact passphrase protecting that export; do not include a trailing newline. |
-| `SOURCE_ACTIONS_READ_TOKEN` | Cross-repository Actions-read credential for **cercano-ai/Cercano**, described below. |
+| `APT_SOURCE_APP_PRIVATE_KEY` | PEM private key of the `cercano-apt-publisher` GitHub App, used only to mint the cross-repository Actions-read token described below. |
 
 `GITHUB_TOKEN` is automatic, not an administrator-created secret. It is used only
 against `cercano-ai/packages`. Never supply signing secrets at repository scope.
@@ -114,6 +114,7 @@ subkey (`FINGERPRINT!`) and inspect the export offline.
 | --- | --- | --- |
 | `apt-production` | `APT_PRIMARY_FINGERPRINT` | Full 40-hex offline primary fingerprint. |
 | `apt-production` | `APT_SIGNING_SUBKEY_FINGERPRINT` | Full 40-hex signing subkey fingerprint (different from primary). |
+| `apt-production` | `APT_SOURCE_APP_CLIENT_ID` | Client ID of the `cercano-apt-publisher` GitHub App. |
 | Repository | `APT_TOOLCHAIN_IMAGE` | Public `ghcr.io/cercano-ai/apt-toolchain@sha256:<64 lowercase hex>` reviewed immutable OCI digest. Tags are rejected. |
 | Repository | `APT_REAL_PACKAGE_ACCEPTED` | Leave absent until the acceptance gate below is independently reviewed; then set exactly `reviewed`. |
 
@@ -168,27 +169,39 @@ docker --context colima-cercano-apt run --rm --platform linux/amd64 --network no
 A repository's `GITHUB_TOKEN` is scoped to that repository; adding `actions: read`
 here does **not** authorize reads of Cercano artifacts. Public repository metadata
 can often be queried anonymously, but downloading an Actions artifact requires an
-authenticated credential with access. The supported least-privilege setup is a
-fine-grained PAT owned by a service account, resource owner `cercano-ai`, selected
-repository **Cercano only**, repository permission **Actions: read** (Metadata read
-is implicit), organization approval/SSO authorization as applicable and a short
-expiry/rotation policy. A GitHub App installation token scoped to Cercano with
-Actions read also works, but its short expiry must cover environment approval and
-job execution; this workflow intentionally does not store an App private key or
-mint tokens. Do not use an all-repositories classic PAT as the default.
+authenticated credential with access.
 
-Check the credential with the workflow-run, workflow, run-artifacts and
-`GET /repos/cercano-ai/Cercano/actions/artifacts/ID/zip` endpoints before scheduling
-production. Download follows the signed storage redirect **without forwarding the
-Authorization header**. Never print the token or signed URL. See GitHub REST
+The credential is a GitHub App installation token. The `prepare` job, after
+`apt-production` approval, mints it with a SHA-pinned
+`actions/create-github-app-token` step, requesting owner `cercano-ai`, repository
+**Cercano only** and **Actions: read**. The token expires after one hour, is passed
+to `apt.py` as `SOURCE_ACTIONS_READ_TOKEN` and is revoked when the job ends. The App
+(`cercano-apt-publisher`) is owned by `cercano-ai`, installable only on that account,
+installed on **Cercano only**, with repository permissions **Actions: read** and
+Metadata read, no webhook and no events.
+
+A service-account fine-grained PAT was not chosen: the account would have to be an
+organization member, and members inherit the organization's default repository
+permission, including read access to private repositories, through a password-based
+login that must be protected indefinitely. The App has no login, no organization
+membership and no access beyond its installation. Its private key does not expire:
+keep it only in the `apt-production` secret, never on disk, and on suspected
+disclosure delete the key in the App settings (or uninstall the App) and generate a
+new one. Do not use an all-repositories classic PAT.
+
+Check that a token minted from the App can read the workflow-run, workflow,
+run-artifacts and `GET /repos/cercano-ai/Cercano/actions/artifacts/ID/zip` endpoints
+before scheduling production. Download follows the signed storage redirect
+**without forwarding the Authorization header**. Never print the token or signed URL. See GitHub REST
 [artifact download permissions](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact)
 and [GITHUB_TOKEN scope](https://docs.github.com/en/actions/concepts/security/github_token).
 If the source does not expose an API artifact digest, stop; no checksum fallback.
 
 ### Job permission inventory
 
-- Guard: none. Prepare: packages `contents: read`, plus the separate source-read
-  credential in its one preparation step; protected signing secrets in that step only.
+- Guard: none. Prepare: packages `contents: read`. The App private key is used only
+  in the token-minting step; the minted source-read token and protected signing
+  secrets only in the preparation step.
 - Retain and finalize: packages `contents: write` only, solely for release creation,
   assets and the final receipt. No long-lived release-write token is needed.
 - Deploy: `pages: write`, `id-token: write` only. Actions artifact transfer uses the
