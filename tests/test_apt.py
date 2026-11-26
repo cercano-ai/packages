@@ -63,6 +63,23 @@ class ArchiveTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):
                 apt.packages_from_zip(data, '1.2.3', Path(temp) / 'debs')
 
+    @patch.object(apt, 'validate_debs', return_value=True)
+    def test_deb_count(self, _):
+        arm64 = {f'{p}_1.2.3_arm64.deb': b'fixture-arm64-' + p.encode() for p in ('cercano-agent', 'cercano-cli')}
+
+        def add(names):
+            def change(files):
+                for name in names:
+                    files[name] = arm64[name]
+                files['SHA256SUMS'] = ''.join(apt.digest(data) + '  ./' + name + '\n'
+                                              for name, data in files.items() if name != 'SHA256SUMS').encode()
+            return change
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertTrue(apt.packages_from_zip(package_zip(add(arm64)), '1.2.3', Path(temp) / 'debs'))
+            self.assertEqual(len(list((Path(temp) / 'debs').glob('*.deb'))), 5)
+        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(ValueError, 'three .* or five'):
+            apt.packages_from_zip(package_zip(add(list(arm64)[:1])), '1.2.3', Path(temp) / 'debs')
+
     def test_expansion_limit(self):
         with patch.object(apt, 'LIMIT', 1), tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):
             apt.packages_from_zip(package_zip(), '1.2.3', Path(temp) / 'debs')
@@ -124,11 +141,10 @@ class BuildHelperTests(unittest.TestCase):
             subprocess.run(['bash', str(Path(apt.__file__).with_name('build-apt-repo.sh')),
                             str(site), str(debs), 'B' * 40], env=env, check=True, capture_output=True)
             self.assertEqual({p.name for p in (site / 'dists/stable/main').iterdir()},
-                             {'binary-amd64', 'binary-all'})
+                             {'binary-amd64', 'binary-arm64', 'binary-all'})
             release = (site / 'dists/stable/Release').read_text()
-            self.assertIn('Architectures=amd64 all', release)
-            self.assertNotIn('arm64', release)
-            for arch in ('amd64', 'all'):
+            self.assertIn('Architectures=amd64 arm64 all', release)
+            for arch in ('amd64', 'arm64', 'all'):
                 self.assertIn('Architecture: all', (site / f'dists/stable/main/binary-{arch}/Packages').read_text())
 
 
@@ -361,6 +377,38 @@ class IdentityTests(unittest.TestCase):
             for bad in [('cercano', '1.2.3', 'amd64'), ('cercano', '1.2.4', 'all')]:
                 with patch.object(apt, 'deb_identity', side_effect=[bad] + good[1:]), self.assertRaises(ValueError):
                     apt.validate_debs(root, '1.2.3')
+
+    def validate(self, identities):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for i in range(len(identities)):
+                (root / f'{i}.deb').touch()
+            with patch.object(apt, 'deb_identity', side_effect=identities):
+                return apt.validate_debs(root, '1.2.3')
+
+    def test_arm64_components_are_optional_but_complete(self):
+        amd64 = [('cercano', '1.2.3', 'all'), ('cercano-agent', '1.2.3', 'amd64'), ('cercano-cli', '1.2.3', 'amd64')]
+        arm64 = [('cercano-agent', '1.2.3', 'arm64'), ('cercano-cli', '1.2.3', 'arm64')]
+        self.assertEqual(len(self.validate(amd64 + arm64)), 5)
+        for label, bad in {
+            'one arm64 component': amd64 + arm64[:1] + [('cercano-agent', '1.2.3', 'amd64')],
+            'arm64 metapackage': amd64[1:] + arm64 + [('cercano', '1.2.3', 'arm64')],
+            'arm64 without amd64': [amd64[0]] + arm64,
+            'stale arm64 version': amd64 + [arm64[0], ('cercano-cli', '1.2.2', 'arm64')],
+            'duplicate identity': amd64 + [arm64[0], arm64[0]],
+        }.items():
+            with self.subTest(label), self.assertRaises(ValueError):
+                self.validate(bad)
+
+    def test_unknown_architecture_is_refused(self):
+        for arch in ('i386', 'armhf', 'aarch64', 'x86_64'):
+            with self.subTest(arch=arch), patch.object(apt.subprocess, 'check_output',
+                                                       return_value=f'Package: cercano-cli\nVersion: 1.2.3\nArchitecture: {arch}\n'):
+                with self.assertRaisesRegex(ValueError, 'unexpected package identity'):
+                    apt.deb_identity(Path('x.deb'))
+        with patch.object(apt.subprocess, 'check_output',
+                          return_value='Package: cercano-cli\nVersion: 1.2.3\nArchitecture: arm64\n'):
+            self.assertEqual(apt.deb_identity(Path('x.deb')), ('cercano-cli', '1.2.3', 'arm64'))
 
 if __name__ == '__main__':
     unittest.main()

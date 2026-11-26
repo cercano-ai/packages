@@ -60,7 +60,7 @@ for deb in "$debs"/*.deb; do
   cp "$deb" "$dest"
   added=$((added + 1))
 done
-for arch in amd64 all; do
+for arch in amd64 arm64 all; do
   dir=dists/stable/main/binary-$arch
   mkdir -p "$dir"
   # --arch X lists X and "all" packages; binary-all lists only the "all" ones.
@@ -76,7 +76,7 @@ apt-ftparchive \
   -o APT::FTPArchive::Release::Label=Cercano \
   -o APT::FTPArchive::Release::Suite=stable \
   -o APT::FTPArchive::Release::Codename=stable \
-  -o "APT::FTPArchive::Release::Architectures=amd64 all" \
+  -o "APT::FTPArchive::Release::Architectures=amd64 arm64 all" \
   -o APT::FTPArchive::Release::Components=main \
   release dists/stable > "$tmp"
 mv "$tmp" dists/stable/Release
