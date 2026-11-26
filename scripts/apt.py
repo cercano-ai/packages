@@ -49,10 +49,10 @@ class API:
         self.root = 'https://api.github.com/repos/' + repo
         self.token = token
 
-    def request(self, path, method='GET', data=None, binary=False):
+    def request(self, path, method='GET', data=None, binary=False, accept=None):
         url = self.root + path
         headers = {'Authorization': 'Bearer ' + self.token,
-                   'Accept': 'application/octet-stream' if binary else 'application/vnd.github+json',
+                   'Accept': accept or ('application/octet-stream' if binary else 'application/vnd.github+json'),
                    'X-GitHub-Api-Version': '2022-11-28'}
         if data is not None:
             data = json.dumps(data).encode()
@@ -286,7 +286,9 @@ def source_artifact(source, run_id, artifact_id, version, sha, expected):
     artifact = matches[0]
     require(not artifact['expired'] and artifact['name'] == f'cercano-{version}-linux-packages-review', 'wrong/expired artifact')
     require(re.fullmatch(r'[0-9a-f]{64}', expected) and artifact.get('digest') == 'sha256:' + expected, 'artifact API digest mismatch')
-    data = source.request('/actions/artifacts/' + artifact_id + '/zip', binary=True)
+    # The artifact ZIP endpoint rejects Accept: application/octet-stream (HTTP 415); with the
+    # standard media type it answers 302 to blob storage, which request() follows without the token.
+    data = source.request('/actions/artifacts/' + artifact_id + '/zip', binary=True, accept='application/vnd.github+json')
     require(digest(data) == expected, 'download digest mismatch')
     return data, run
 

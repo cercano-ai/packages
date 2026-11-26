@@ -8,7 +8,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, MagicMock
 import zipfile
 
 spec = importlib.util.spec_from_file_location('apt', Path(__file__).parents[1] / 'scripts/apt.py')
@@ -261,6 +261,42 @@ class StateTests(unittest.TestCase):
         with patch.dict(os.environ, env), self.assertRaises(ValueError):
             apt.local_api()
 
+
+
+class RequestHeaderTests(unittest.TestCase):
+    def fetch(self, path):
+        seen = []
+        def opener(*args):
+            def open_(req, timeout):
+                seen.append(req)
+                raise apt.urllib.error.HTTPError(req.full_url, 302, 'Found', {'Location': 'https://blob.example/zip'}, None)
+            return Mock(open=open_)
+        body = MagicMock()
+        body.read.return_value = b'zip'
+        with patch.object(apt.urllib.request, 'build_opener', opener),              patch.object(apt.urllib.request, 'urlopen', Mock(return_value=body)) as blob:
+            api = apt.API(apt.SOURCE, 'token')
+            if path == 'artifact':
+                self.data = b'zip'; self.sha = 'a' * 40
+                run = dict(status='completed', conclusion='success', event='workflow_dispatch', head_sha=self.sha,
+                           head_branch='main', repository={'full_name': apt.SOURCE},
+                           head_repository={'full_name': apt.SOURCE}, workflow_id=12, path=apt.WORKFLOW)
+                api_json = {'/actions/runs/1': run, '/actions/workflows/release-macos.yml': {'id': 12}}
+                real = api.request
+                api.request = lambda p, **kw: api_json[p] if p in api_json else real(p, **kw)
+                api.pages = lambda *a: [dict(id=2, name='cercano-1.2.3-linux-packages-review', expired=False,
+                                             digest='sha256:' + apt.digest(b'zip'))]
+                apt.source_artifact(api, '1', '2', '1.2.3', self.sha, apt.digest(b'zip'))
+            else:
+                api.request('/releases/assets/7', binary=True)
+        # The redirect target is fetched as a bare URL, so the API token never reaches blob storage.
+        self.assertEqual(blob.call_args.args[0], 'https://blob.example/zip')
+        return seen[0]
+
+    def test_artifact_zip_uses_standard_media_type(self):
+        self.assertEqual(self.fetch('artifact').get_header('Accept'), 'application/vnd.github+json')
+
+    def test_release_asset_uses_octet_stream(self):
+        self.assertEqual(self.fetch('asset').get_header('Accept'), 'application/octet-stream')
 
 
 class ProvenanceTests(unittest.TestCase):
