@@ -2,7 +2,9 @@
 
 This is **local deployment preparation**, not an enabled or production-accepted service.
 Nothing in this change creates environments, secrets, Pages settings, images or releases.
-Only Debian/Ubuntu amd64 plus the `all` metapackage are accepted. Upstream still labels
+Only Debian/Ubuntu amd64 and arm64 plus the `all` metapackage are accepted: each
+release brings the amd64 components and the metapackage, and optionally both arm64
+components (never one without the other). Upstream still labels
 Linux experimental; signing metadata does not turn Linux into a supported platform.
 
 ## Design and trust boundary
@@ -19,7 +21,8 @@ may replace an older **pending** run with a newer pending run; this is not a FIF
    conclusion, artifact membership/name/expiry/digest, downloaded digest, ZIP paths,
    member types, duplicates, size budget, complete `SHA256SUMS` inventory and Debian
    package identities are checked. No artifact contents are executed or installed.
-   Only the three `.deb` files are extracted; checksums cover the other formats too.
+   Only the `.deb` files (three, or five with arm64) are extracted; checksums cover
+   the other formats too.
 2. Preparation restores the last published full site from Releases, checks its digest,
    and rejects unsafe TAR members. It checks the *entire* retained pool for conflicting
    package/version/architecture or filenames before adding new packages. Exact repeats
@@ -54,13 +57,12 @@ may replace an older **pending** run with a newer pending run; this is not a FIF
 Source inspection was against remote Cercano main
 `cf406792ecb487c9492a6bd259aa36b807b7f743`: packaging workflow, `package-verified.sh`,
 `render_packages.py`, `build-apt-repo.sh`, `sign-apt-repo.sh`, and Linux artifact docs.
-`scripts/build-apt-repo.sh` is vendored from that revision with a local two-line
-architecture patch: remove `arm64` from the index-generation loop and the Release
-`Architectures` field, leaving only `amd64` and `all` to match the validator. The
-upstream file SHA256 is
-`330ecf68baeaf7763e3e64f73e53086c42b1da4534f017fa53df06a3454c939e`;
-the patched local file SHA256 is
-`07170703418943c76ae35607b15b6d28c6dcec40fff6d2b98f677ce35c59f607`.
+`scripts/build-apt-repo.sh` is vendored unmodified from that revision (SHA256
+`330ecf68baeaf7763e3e64f73e53086c42b1da4534f017fa53df06a3454c939e`, unchanged on
+Cercano main through `c5b7305c`). It indexes `amd64`, `arm64` and `all`, matching the
+validator. Until a promoted release carries arm64 components, `binary-arm64` lists
+only the `all` metapackage, whose dependencies an arm64 client cannot satisfy yet.
+(An earlier local patch removed `arm64`; it was dropped when the validator gained arm64.)
 The wrapper adds stricter primary/subkey checks, exact signature verification and
 caller-file cleanup. No upstream helper is downloaded or executed dynamically.
 
@@ -236,7 +238,8 @@ an isolated Linux fixture environment, with disposable password-protected primar
 and signing subkey only. Review evidence for all of the following:
 
 1. Real successful upstream run, artifact ID, digest, source SHA and version; inspect
-   all three package controls, dependencies, ownership and maintainer scripts. No
+   every package control (three, or five with arm64), dependencies, ownership and
+   maintainer scripts. No
    package installation occurs in the signing job. Record upstream workflow's own
    install/smoke checks. If the complete upstream run failed, do not promote its
    otherwise-successful package job.
@@ -244,7 +247,8 @@ and signing subkey only. Review evidence for all of the following:
    Verify `gpgv` trust against the pinned public primary and exact signing subkey;
    `apt update` and install all three packages in a disposable Debian and Ubuntu
    client using `signed-by`, with no insecure/trusted=yes overrides. Confirm amd64
-   and `all` indices and installed CLI/agent smoke checks.
+   and `all` indices and installed CLI/agent smoke checks. For a set with arm64,
+   repeat on an arm64 client (native, not emulated) and confirm the `arm64` index.
 3. Reject full-primary secret import, wrong/extra/expired/revoked subkeys, wrong
    passphrase and altered packages. Verify private files/agent cleanup after both
    successful signing and forced helper failure; logs must contain no secrets.

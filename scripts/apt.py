@@ -171,7 +171,7 @@ def packages_from_zip(data, version, dest):
     for name, data in files.items():
         require(digest(data) == sums[name], 'package checksum mismatch')
     debs = {name: data for name, data in files.items() if name.endswith('.deb')}
-    require(len(debs) == 3, 'expected three Debian packages')
+    require(len(debs) in (3, 5), 'expected three (amd64) or five (amd64 and arm64) Debian packages')
     dest.mkdir()
     for name, data in debs.items():
         (dest / name).write_bytes(data)
@@ -182,16 +182,21 @@ def deb_identity(path):
     fields = subprocess.check_output(['dpkg-deb', '-f', str(path), 'Package', 'Version', 'Architecture'], text=True)
     parsed = dict(line.split(': ', 1) for line in fields.strip().splitlines())
     pkg, version, arch = (parsed[x] for x in ('Package', 'Version', 'Architecture'))
-    require(pkg in ('cercano', 'cercano-agent', 'cercano-cli') and arch in ('amd64', 'all'), 'unexpected package identity')
+    require(pkg in ('cercano', 'cercano-agent', 'cercano-cli') and arch in ('amd64', 'arm64', 'all'), 'unexpected package identity')
     require(re.fullmatch(r'[0-9A-Za-z.+:~\-]+', version), 'unsafe Debian version')
     return pkg, version, arch
 
 
+# One architecture-independent metapackage, plus both components for amd64 and, optionally, arm64.
+AMD64_SET = {('cercano', 'all'), ('cercano-agent', 'amd64'), ('cercano-cli', 'amd64')}
+ARM64_COMPONENTS = {('cercano-agent', 'arm64'), ('cercano-cli', 'arm64')}
+
+
 def validate_debs(dest, version):
     identities = [deb_identity(p) for p in dest.glob('*.deb')]
-    require({i[0] for i in identities} == {'cercano', 'cercano-agent', 'cercano-cli'}
-            and len(identities) == 3 and all(i[1] == version and i[2] == ('all' if i[0] == 'cercano' else 'amd64')
-                                           for i in identities), 'package version/set mismatch')
+    present = [(i[0], i[2]) for i in identities]
+    require(len(present) == len(set(present)) and set(present) in (AMD64_SET, AMD64_SET | ARM64_COMPONENTS)
+            and all(i[1] == version for i in identities), 'package version/set mismatch')
     return identities
 
 
